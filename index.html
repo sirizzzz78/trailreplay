@@ -406,9 +406,18 @@ async function loadActivity() {
 
     addRoute();
     addPhotoMarkers();
+
+    // Fly to route bounds before starting playback
+    const lngs = routeCoords.map(c => c[1]);
+    const lats = routeCoords.map(c => c[0]);
+    map.fitBounds(
+      [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+      { padding: 60, pitch: 65, duration: 1200 }
+    );
+
     hideLoader();
     currentStep = 0;
-    startPlay();
+    setTimeout(startPlay, 1400);
 
   } catch (e) {
     showToast(e.message || 'Failed to load activity.');
@@ -420,13 +429,12 @@ async function loadActivity() {
 function buildMap() {
   return new Promise(resolve => {
     if (map) { map.remove(); map = null; }
-    const mid = routeCoords[Math.floor(routeCoords.length / 2)];
 
     map = new maplibregl.Map({
       container: 'map',
       style:     `https://api.maptiler.com/maps/outdoor-v2/style.json?key=${MAPTILER}`,
-      center:    [mid[1], mid[0]],
-      zoom:      11, pitch: 45, bearing: 0,
+      center:    [0, 20],
+      zoom:      2, pitch: 0, bearing: 0,
       antialias: true
     });
 
