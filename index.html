@@ -218,6 +218,13 @@
 <!-- ── Map ── -->
 <div class="screen" id="s-map">
   <div id="map"></div>
+  <div id="map-loader" style="
+    position:absolute; inset:0; background:#080D08;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px;
+    z-index:10;">
+    <div class="spinner"></div>
+    <p class="loading-msg" id="map-loader-msg">fetching route…</p>
+  </div>
   <div class="overlay">
     <div class="stats-card">
       <p class="activity-name" id="map-name">—</p>
@@ -362,20 +369,24 @@ async function loadActivity() {
   const id  = extractId(raw);
   if (!id) { showToast('Paste a valid Strava activity URL.'); return; }
 
-  goTo('s-loading');
-  setMsg('fetching route…');
+  // Show map screen immediately so map starts initialising in parallel with API calls
+  goTo('s-map');
+  setLoaderMsg('fetching route…');
 
   try {
-    const [activity, streams, photoData] = await Promise.all([
-      api(`/activities/${id}`),
-      api(`/activities/${id}/streams?keys=latlng,time,altitude&key_by_type=true`),
-      api(`/activities/${id}/photos?size=2000`).catch(() => [])
+    const [[activity, streams, photoData]] = await Promise.all([
+      Promise.all([
+        api(`/activities/${id}`),
+        api(`/activities/${id}/streams?keys=latlng,time,altitude&key_by_type=true`),
+        api(`/activities/${id}/photos?size=2000`).catch(() => [])
+      ]),
+      buildMap()
     ]);
 
     if (!streams.latlng) throw new Error('No GPS data found for this activity.');
 
     routeCoords   = streams.latlng.data;
-    routeTimes    = streams.time     ? streams.time.data     : routeCoords.map((_, i) => i);
+    routeTimes    = streams.time ? streams.time.data : routeCoords.map((_, i) => i);
     totalDuration = routeTimes[routeTimes.length - 1];
 
     photos = (photoData || [])
@@ -387,18 +398,15 @@ async function loadActivity() {
         caption: p.caption || ''
       }));
 
-    // Stats
     document.getElementById('map-name').textContent   = activity.name;
     document.getElementById('stat-dist').textContent  = (activity.distance / 1000).toFixed(1);
     document.getElementById('stat-elev').textContent  = Math.round(activity.total_elevation_gain);
     document.getElementById('stat-time').textContent  = fmt(activity.moving_time);
     document.getElementById('time-total').textContent = fmt(totalDuration);
 
-    setMsg('rendering terrain…');
-    await buildMap();
-    goTo('s-map');
     addRoute();
     addPhotoMarkers();
+    hideLoader();
     currentStep = 0;
     startPlay();
 
@@ -578,7 +586,8 @@ function backToActivity() {
   goTo('s-activity');
 }
 
-function setMsg(t) { document.getElementById('loading-msg').textContent = t; }
+function setLoaderMsg(t) { document.getElementById('map-loader-msg').textContent = t; }
+function hideLoader() { document.getElementById('map-loader').style.display = 'none'; }
 
 function fmt(secs) {
   const h = Math.floor(secs / 3600);
