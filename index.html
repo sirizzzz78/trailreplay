@@ -396,10 +396,11 @@ async function loadActivity() {
 
     setMsg('rendering terrain…');
     await buildMap();
+    goTo('s-map');
     addRoute();
     addPhotoMarkers();
-    goTo('s-map');
-    setTimeout(() => { currentStep = 0; startPlay(); }, 600);
+    currentStep = 0;
+    startPlay();
 
   } catch (e) {
     showToast(e.message || 'Failed to load activity.');
@@ -417,11 +418,11 @@ function buildMap() {
       container: 'map',
       style:     `https://api.maptiler.com/maps/outdoor-v2/style.json?key=${MAPTILER}`,
       center:    [mid[1], mid[0]],
-      zoom:      13, pitch: 65, bearing: 0,
+      zoom:      11, pitch: 45, bearing: 0,
       antialias: true
     });
 
-    map.on('load', () => {
+    map.on('style.load', () => {
       map.addSource('terrain', {
         type: 'raster-dem',
         url:  `https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${MAPTILER}`,
