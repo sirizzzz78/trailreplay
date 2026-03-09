@@ -448,7 +448,6 @@ function buildMap() {
         tileSize: 256
       });
       map.setTerrain({ source: 'terrain', exaggeration: 1.5 });
-      map.setFog({ color: '#0A1A0A', 'high-color': '#080D08', 'horizon-blend': 0.04 });
       map.resize();
       resolve();
     });
