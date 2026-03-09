@@ -430,6 +430,9 @@ function buildMap() {
   return new Promise(resolve => {
     if (map) { map.remove(); map = null; }
 
+    // Give the browser one frame to paint the container before MapLibre reads its dimensions
+    requestAnimationFrame(() => {
+
     map = new maplibregl.Map({
       container: 'map',
       style:     `https://api.maptiler.com/maps/outdoor-v2/style.json?key=${MAPTILER}`,
@@ -446,8 +449,11 @@ function buildMap() {
       });
       map.setTerrain({ source: 'terrain', exaggeration: 1.5 });
       map.setFog({ color: '#0A1A0A', 'high-color': '#080D08', 'horizon-blend': 0.04 });
+      map.resize();
       resolve();
     });
+
+    }); // end requestAnimationFrame
   });
 }
 
