@@ -206,6 +206,19 @@
     placeholder="paste a strava activity link…"
     onkeydown="if(event.key==='Enter') loadActivity()"/>
   <button class="load-btn" onclick="loadActivity()">Load Activity →</button>
+
+  <div id="google-connect-row" style="margin-top:20px; display:flex; align-items:center; gap:12px;">
+    <button id="google-btn" onclick="connectGoogle()" style="
+      display:flex; align-items:center; gap:8px;
+      background:#1A1A1A; border:1px solid #2A3A22; color:#8A9A80;
+      font-size:13px; padding:10px 18px; border-radius:20px; cursor:pointer;
+      transition:border-color 0.2s, color 0.2s;">
+      <svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+      <span id="google-btn-label">connect google photos</span>
+    </button>
+    <span id="google-status" style="font-size:12px; color:#4A5A42; display:none;">✓ connected</span>
+  </div>
+
   <button class="disconnect-btn" onclick="disconnect()">disconnect strava</button>
 </div>
 
@@ -277,11 +290,22 @@ const MAPTILER    = '2OnFMSLUHqJZ20hkM0IB';
 const REDIRECT    = window.location.origin + '/api/exchange';
 const AUTH_URL    = `https://www.strava.com/oauth/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT)}&response_type=code&scope=activity:read_all`;
 
+const GOOGLE_CLIENT_ID  = '649464508000-57j4fhkgou7mh4ov807g0h5cin3m8va4.apps.googleusercontent.com';
+const GOOGLE_REDIRECT   = 'https://trailreplay.vercel.app/api/google-auth';
+const GOOGLE_SCOPE      = 'https://www.googleapis.com/auth/photoslibrary.readonly';
+const GOOGLE_AUTH_URL   = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${encodeURIComponent(GOOGLE_REDIRECT)}&response_type=code&scope=${encodeURIComponent(GOOGLE_SCOPE)}&access_type=offline&prompt=consent`;
+
 // ── State ─────────────────────────────────────────────────────────────────
 let accessToken  = localStorage.getItem('strava_access')  || null;
 let refreshToken = localStorage.getItem('strava_refresh') || null;
 let expiresAt    = parseInt(localStorage.getItem('strava_expires') || '0');
 let athleteName  = localStorage.getItem('strava_name')   || '';
+
+let googleToken   = localStorage.getItem('google_access')   || null;
+let googleRefresh = localStorage.getItem('google_refresh')  || null;
+let googleExpires = parseInt(localStorage.getItem('google_expires') || '0');
+
+let activityStartDate = null;   // ISO string, set when activity loads
 
 let map           = null;
 let routeCoords   = [];   // [[lat,lng], ...]
@@ -299,12 +323,37 @@ let photoTimeout   = null;
 const SPEEDS  = [1, 2, 4, 8];
 const TICK_MS = 100;
 
+// Per-activity camera + sampling config
+const ACTIVITY_CONFIG = {
+  run:   { zoom: 15.5, pitch: 60, lookAhead: 25, maxPts: 600, label: 'Run'       },
+  hike:  { zoom: 15.0, pitch: 65, lookAhead: 20, maxPts: 800, label: 'Hike'      },
+  ride:  { zoom: 14.5, pitch: 65, lookAhead: 40, maxPts: 600, label: 'Ride'      },
+  ski:   { zoom: 13.5, pitch: 70, lookAhead: 50, maxPts: 400, label: 'Ski/Board' },
+  default:{ zoom: 14.5, pitch: 65, lookAhead: 30, maxPts: 700, label: ''         }
+};
+
+function activityConfig(stravaType) {
+  const t = (stravaType || '').toLowerCase();
+  if (['run','trailrun','virtualrun'].includes(t))                         return ACTIVITY_CONFIG.run;
+  if (['hike','walk','snowshoe','backcountryski','nordicski'].includes(t)) return ACTIVITY_CONFIG.hike;
+  if (['ride','virtualride','mountainbikeride','gravelride','ebikeride'].includes(t)) return ACTIVITY_CONFIG.ride;
+  if (['alpineski','snowboard'].includes(t))                               return ACTIVITY_CONFIG.ski;
+  return ACTIVITY_CONFIG.default;
+}
+
+let camCfg = ACTIVITY_CONFIG.default;
+
 // ── Boot ──────────────────────────────────────────────────────────────────
 (function boot() {
   const p = new URLSearchParams(window.location.search);
   if (p.get('access_token')) {
     saveTokens(p.get('access_token'), p.get('refresh_token'),
                parseInt(p.get('expires_at')), p.get('athlete_name') || '');
+    history.replaceState({}, '', '/');
+  }
+  if (p.get('google_access_token')) {
+    saveGoogleTokens(p.get('google_access_token'), p.get('google_refresh_token'),
+                     Math.floor(Date.now() / 1000) + parseInt(p.get('google_expires_in') || '3600'));
     history.replaceState({}, '', '/');
   }
   accessToken ? showActivityScreen() : goTo('s-connect');
@@ -342,6 +391,108 @@ async function ensureToken() {
     showToast('Session expired — please reconnect.');
     disconnect();
     throw new Error('Token refresh failed');
+  }
+}
+
+// ── Google Auth ───────────────────────────────────────────────────────────
+function connectGoogle() { window.location.href = GOOGLE_AUTH_URL; }
+
+function saveGoogleTokens(access, refresh, expires) {
+  googleToken   = access;
+  googleExpires = expires;
+  if (refresh) { googleRefresh = refresh; localStorage.setItem('google_refresh', refresh); }
+  localStorage.setItem('google_access',  access);
+  localStorage.setItem('google_expires', expires);
+  updateGoogleUI();
+}
+
+function updateGoogleUI() {
+  const connected = !!googleToken;
+  document.getElementById('google-btn-label').textContent = connected ? 'google photos connected' : 'connect google photos';
+  document.getElementById('google-status').style.display  = connected ? 'inline' : 'none';
+  if (connected) document.getElementById('google-btn').style.borderColor = '#3A6A32';
+}
+
+async function ensureGoogleToken() {
+  if (!googleToken) return false;
+  if (Date.now() / 1000 < googleExpires - 60) return true;
+  if (!googleRefresh) { googleToken = null; updateGoogleUI(); return false; }
+  try {
+    const r    = await fetch('/api/google-refresh', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: googleRefresh })
+    });
+    const data = await r.json();
+    if (!data.access_token) throw new Error();
+    saveGoogleTokens(data.access_token, null, Math.floor(Date.now() / 1000) + (data.expires_in || 3600));
+    return true;
+  } catch {
+    googleToken = null; updateGoogleUI(); return false;
+  }
+}
+
+// ── Google Photos ─────────────────────────────────────────────────────────
+async function loadGooglePhotos(startDate, durationSecs) {
+  const ok = await ensureGoogleToken();
+  if (!ok) return [];
+
+  try {
+    const startMs = new Date(startDate).getTime();
+    const endMs   = startMs + durationSecs * 1000;
+
+    // Collect each unique calendar day the activity spans (UTC)
+    const dates = [];
+    let d = new Date(startMs);
+    while (d.getTime() <= endMs + 86400000) {
+      dates.push({ year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() });
+      d = new Date(d.getTime() + 86400000);
+      if (dates.length > 3) break; // cap at 3 days
+    }
+
+    const r = await fetch('https://photoslibrary.googleapis.com/v1/mediaItems:search', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + googleToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filters: {
+          dateFilter: { dates },
+          mediaTypeFilter: { mediaTypes: ['PHOTO'] }
+        },
+        pageSize: 100
+      })
+    });
+    if (!r.ok) return [];
+
+    const data  = await r.json();
+    const items = data.mediaItems || [];
+
+    return items
+      .filter(item => item.mediaMetadata?.creationTime)
+      .map(item => {
+        const photoMs   = new Date(item.mediaMetadata.creationTime).getTime();
+        const offsetSec = (photoMs - startMs) / 1000;
+        if (offsetSec < -120 || offsetSec > durationSecs + 120) return null;
+
+        // Match to nearest route point by time offset
+        let bestIdx = 0, bestDiff = Infinity;
+        for (let i = 0; i < routeTimes.length; i++) {
+          const diff = Math.abs(routeTimes[i] - offsetSec);
+          if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+        }
+
+        const coord = routeCoords[bestIdx];
+        return {
+          lat:     coord[0],
+          lng:     coord[1],
+          url:     item.baseUrl + '=w2000-h2000',
+          caption: item.filename || fmt(Math.max(0, Math.floor(offsetSec))),
+          source:  'google'
+        };
+      })
+      .filter(Boolean);
+
+  } catch (e) {
+    console.warn('Google Photos load failed:', e);
+    return [];
   }
 }
 
@@ -385,18 +536,29 @@ async function loadActivity() {
 
     if (!streams.latlng) throw new Error('No GPS data found for this activity.');
 
-    routeCoords   = streams.latlng.data;
-    routeTimes    = streams.time ? streams.time.data : routeCoords.map((_, i) => i);
+    // Pick camera config based on activity type
+    camCfg = activityConfig(activity.type);
+
+    // Downsample dense GPS tracks based on activity type
+    const raw      = streams.latlng.data;
+    const rawTimes = streams.time ? streams.time.data : raw.map((_, i) => i);
+    const step     = Math.max(1, Math.floor(raw.length / camCfg.maxPts));
+    routeCoords   = raw.filter((_, i) => i % step === 0 || i === raw.length - 1);
+    routeTimes    = rawTimes.filter((_, i) => i % step === 0 || i === rawTimes.length - 1);
     totalDuration = routeTimes[routeTimes.length - 1];
 
-    photos = (photoData || [])
+    const stravaPhotos = (photoData || [])
       .filter(p => p.location && p.location[0] && p.urls)
       .map(p => ({
         lat:     p.location[0],
         lng:     p.location[1],
         url:     p.urls['2000'] || Object.values(p.urls)[0],
-        caption: p.caption || ''
+        caption: p.caption || '',
+        source:  'strava'
       }));
+
+    const googlePhotos = await loadGooglePhotos(activity.start_date, activity.elapsed_time);
+    photos = [...stravaPhotos, ...googlePhotos];
 
     document.getElementById('map-name').textContent   = activity.name;
     document.getElementById('stat-dist').textContent  = (activity.distance / 1000).toFixed(1);
@@ -407,13 +569,16 @@ async function loadActivity() {
     addRoute();
     addPhotoMarkers();
 
-    // Fly to route bounds before starting playback
-    const lngs = routeCoords.map(c => c[1]);
-    const lats = routeCoords.map(c => c[0]);
-    map.fitBounds(
-      [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
-      { padding: 60, pitch: 65, duration: 1200 }
-    );
+    // Fly to route start with correct pitch — fitBounds resets pitch to 0 so we do it manually
+    const lngs   = routeCoords.map(c => c[1]);
+    const lats   = routeCoords.map(c => c[0]);
+    const cLng   = (Math.min(...lngs) + Math.max(...lngs)) / 2;
+    const cLat   = (Math.min(...lats) + Math.max(...lats)) / 2;
+    const spanLng = Math.max(...lngs) - Math.min(...lngs);
+    const spanLat = Math.max(...lats) - Math.min(...lats);
+    const zoom   = Math.min(14, Math.floor(Math.log2(360 / Math.max(spanLng, spanLat * 1.4))) + 1);
+
+    map.easeTo({ center: [cLng, cLat], zoom, pitch: camCfg.pitch, bearing: 0, duration: 1200 });
 
     hideLoader();
     currentStep = 0;
@@ -447,7 +612,8 @@ function buildMap() {
         url:  `https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${MAPTILER}`,
         tileSize: 256
       });
-      map.setTerrain({ source: 'terrain', exaggeration: 1.5 });
+      map.setTerrain({ source: 'terrain', exaggeration: 2.0 });
+      map.setPitch(camCfg.pitch);
       map.resize();
       resolve();
     });
@@ -488,6 +654,7 @@ function addPhotoMarkers() {
 // ── Playback ──────────────────────────────────────────────────────────────
 function startPlay() {
   if (currentStep >= routeCoords.length - 1) currentStep = 0;
+  if (currentStep === 0) smoothBearing = null;
   isPlaying = true;
   document.getElementById('play-btn').textContent = '⏸';
   tick();
@@ -513,13 +680,29 @@ function tick() {
   animTimer = setTimeout(tick, TICK_MS);
 }
 
+let smoothBearing = null;
+
 function moveCamera(i) {
-  const pos  = routeCoords[i];
-  const next = routeCoords[Math.min(i + 5, routeCoords.length - 1)];
+  const pos        = routeCoords[i];
+  const lookAhead  = Math.min(i + camCfg.lookAhead, routeCoords.length - 1);
+  const next       = routeCoords[lookAhead];
+  const rawBearing = bearing(pos, next);
+
+  // Smooth bearing to avoid rapid left/right flicker from GPS noise
+  if (smoothBearing === null) {
+    smoothBearing = rawBearing;
+  } else {
+    let diff = rawBearing - smoothBearing;
+    if (diff >  180) diff -= 360;
+    if (diff < -180) diff += 360;
+    smoothBearing = (smoothBearing + diff * 0.15 + 360) % 360;
+  }
+
   map.easeTo({
     center:   [pos[1], pos[0]],
-    bearing:  bearing(pos, next),
-    pitch:    65, zoom: 14.5,
+    bearing:  smoothBearing,
+    pitch:    camCfg.pitch,
+    zoom:     camCfg.zoom,
     duration: TICK_MS * 1.1,
     easing:   t => t
   });
@@ -591,6 +774,7 @@ function goTo(id) {
 
 function showActivityScreen() {
   document.getElementById('athlete-name').textContent = athleteName || 'explorer';
+  updateGoogleUI();
   goTo('s-activity');
 }
 
