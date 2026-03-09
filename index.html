@@ -325,11 +325,11 @@ const TICK_MS = 100;
 
 // Per-activity camera + sampling config
 const ACTIVITY_CONFIG = {
-  run:   { zoom: 15.5, pitch: 60, lookAhead: 25, maxPts: 600, label: 'Run'       },
-  hike:  { zoom: 15.0, pitch: 65, lookAhead: 20, maxPts: 800, label: 'Hike'      },
-  ride:  { zoom: 14.5, pitch: 65, lookAhead: 40, maxPts: 600, label: 'Ride'      },
-  ski:   { zoom: 13.5, pitch: 70, lookAhead: 50, maxPts: 400, label: 'Ski/Board' },
-  default:{ zoom: 14.5, pitch: 65, lookAhead: 30, maxPts: 700, label: ''         }
+  run:   { zoom: 17.0, pitch: 60, lookAhead: 25, maxPts: 600, label: 'Run'       },
+  hike:  { zoom: 16.5, pitch: 65, lookAhead: 20, maxPts: 800, label: 'Hike'      },
+  ride:  { zoom: 16.0, pitch: 65, lookAhead: 40, maxPts: 600, label: 'Ride'      },
+  ski:   { zoom: 15.5, pitch: 70, lookAhead: 50, maxPts: 400, label: 'Ski/Board' },
+  default:{ zoom: 16.0, pitch: 65, lookAhead: 30, maxPts: 700, label: ''         }
 };
 
 function activityConfig(stravaType) {
@@ -449,16 +449,10 @@ async function loadGooglePhotos(startDate, durationSecs) {
       if (dates.length > 3) break; // cap at 3 days
     }
 
-    const r = await fetch('https://photoslibrary.googleapis.com/v1/mediaItems:search', {
+    const r = await fetch('/api/google-photos', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + googleToken, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        filters: {
-          dateFilter: { dates },
-          mediaTypeFilter: { mediaTypes: ['PHOTO'] }
-        },
-        pageSize: 100
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: googleToken, dates })
     });
     if (!r.ok) return [];
 
@@ -546,6 +540,7 @@ async function loadActivity() {
     routeCoords   = raw.filter((_, i) => i % step === 0 || i === raw.length - 1);
     routeTimes    = rawTimes.filter((_, i) => i % step === 0 || i === rawTimes.length - 1);
     totalDuration = routeTimes[routeTimes.length - 1];
+    computeSmoothedBearings();
 
     const stravaPhotos = (photoData || [])
       .filter(p => p.location && p.location[0] && p.urls)
@@ -654,7 +649,6 @@ function addPhotoMarkers() {
 // ── Playback ──────────────────────────────────────────────────────────────
 function startPlay() {
   if (currentStep >= routeCoords.length - 1) currentStep = 0;
-  if (currentStep === 0) smoothBearing = null;
   isPlaying = true;
   document.getElementById('play-btn').textContent = '⏸';
   tick();
@@ -680,30 +674,43 @@ function tick() {
   animTimer = setTimeout(tick, TICK_MS);
 }
 
-let smoothBearing = null;
+let smoothedBearings = [];
 
-function moveCamera(i) {
-  const pos        = routeCoords[i];
-  const lookAhead  = Math.min(i + camCfg.lookAhead, routeCoords.length - 1);
-  const next       = routeCoords[lookAhead];
-  const rawBearing = bearing(pos, next);
+// Pre-compute a fully smoothed bearing for every route point.
+// Called once after routeCoords is built, before playback starts.
+function computeSmoothedBearings() {
+  const n = routeCoords.length;
 
-  // Smooth bearing to avoid rapid left/right flicker from GPS noise
-  if (smoothBearing === null) {
-    smoothBearing = rawBearing;
-  } else {
-    let diff = rawBearing - smoothBearing;
-    if (diff >  180) diff -= 360;
-    if (diff < -180) diff += 360;
-    smoothBearing = (smoothBearing + diff * 0.15 + 360) % 360;
+  // Step 1: raw lookahead bearings
+  const raw = routeCoords.map((_, i) => {
+    const j = Math.min(i + camCfg.lookAhead, n - 1);
+    return bearing(routeCoords[i], routeCoords[j]);
+  });
+
+  // Step 2: run 5 forward EMA passes with a gentle alpha (0.08)
+  let arr = raw.slice();
+  for (let pass = 0; pass < 5; pass++) {
+    const smooth = [arr[0]];
+    for (let i = 1; i < n; i++) {
+      let diff = arr[i] - smooth[i - 1];
+      if (diff >  180) diff -= 360;
+      if (diff < -180) diff += 360;
+      smooth.push((smooth[i - 1] + diff * 0.08 + 360) % 360);
+    }
+    arr = smooth;
   }
 
+  smoothedBearings = arr;
+}
+
+function moveCamera(i) {
+  const pos = routeCoords[i];
   map.easeTo({
     center:   [pos[1], pos[0]],
-    bearing:  smoothBearing,
+    bearing:  smoothedBearings[i] ?? 0,
     pitch:    camCfg.pitch,
     zoom:     camCfg.zoom,
-    duration: TICK_MS * 1.1,
+    duration: 200,
     easing:   t => t
   });
 }
